@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code Pad (offline)</title>
+<style>
+:root{
+  --bg:#13181d;--panel:#1a2128;--line:#27313a;--text:#d6dde4;--muted:#78879a;--accent:#4fc3ad;--accent-ink:#06211c;
+  --c:#667789;--s:#e2b673;--n:#d98ba3;--k:#79afef;--f:#4fc3ad;--t:#c3a0e6;--sel:#2c4a5c;
+  --fs:14px;
+  color-scheme:dark;
+}
+:root[data-theme="light"]{
+  --bg:#f2f4f6;--panel:#ffffff;--line:#d9dfe5;--text:#1d2730;--muted:#6b7a89;--accent:#0b7d6b;--accent-ink:#ffffff;
+  --c:#7a8794;--s:#a45b00;--n:#b42b5c;--k:#1f5fbf;--f:#0b7d6b;--t:#7a3fb0;--sel:#bfdcf0;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;display:flex;flex-direction:column;height:100dvh}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+h1{font-size:17px;margin:0 auto 0 0;font-weight:650;letter-spacing:.01em}
+.group{display:flex;align-items:center;gap:6px}
+button,select{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer}
+button:hover,select:hover{border-color:var(--muted)}
+button:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button.icon{padding:6px 10px;min-width:34px}
+.editor{flex:1;min-height:0;display:grid;grid-template-columns:auto 1fr;background:var(--panel)}
+#gut,#hl,#ed{font:var(--fs)/calc(var(--fs)*1.6) ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,"DejaVu Sans Mono","Liberation Mono",monospace;tab-size:4;margin:0}
+#gut{overflow:hidden;text-align:right;padding:14px 10px 40px 14px;color:var(--muted);border-right:1px solid var(--line);user-select:none;white-space:pre;min-width:3.2em}
+.pane{position:relative;min-width:0}
+#hl,#ed{position:absolute;inset:0;padding:14px 16px 40px;white-space:pre;overflow:auto;border:0;width:100%;height:100%}
+#hl{overflow:hidden;pointer-events:none;color:var(--text)}
+#ed{background:transparent;color:transparent;caret-color:var(--text);resize:none;outline:none}
+#ed::selection{background:var(--sel);color:transparent}
+#ed::placeholder{color:var(--muted)}
+.c{color:var(--c);font-style:italic}.s{color:var(--s)}.n{color:var(--n)}.k{color:var(--k)}.f{color:var(--f)}.t{color:var(--t)}
+footer{display:flex;flex-wrap:wrap;gap:4px 18px;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);color:var(--muted);font-size:13px}
+#msg{margin-left:auto;color:var(--accent)}
+@media (max-width:640px){h1{width:100%}}
+@media (prefers-reduced-motion:no-preference){button{transition:border-color .15s}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Code Pad</h1>
+  <div class="group">
+    <button class="primary" id="paste">Paste</button>
+    <button id="copy">Copy</button>
+    <button id="clear">Clear</button>
+  </div>
+  <div class="group">
+    <button id="open">Open file</button>
+    <button id="save">Save file</button>
+    <input type="file" id="file" hidden>
+  </div>
+  <div class="group">
+    <label for="lang" class="sr" style="color:var(--muted)">Language</label>
+    <select id="lang"></select>
+    <button class="icon" id="smaller" aria-label="Smaller text">A−</button>
+    <button class="icon" id="bigger" aria-label="Larger text">A+</button>
+    <button id="theme">Light</button>
+  </div>
+</header>
+
+<div class="editor">
+  <div id="gut" aria-hidden="true">1</div>
+  <div class="pane">
+    <pre id="hl" aria-hidden="true"></pre>
+    <textarea id="ed" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" placeholder="Paste or type code here. Language is detected automatically."></textarea>
+  </div>
+</div>
+
+<footer>
+  <span id="pos">Ln 1, Col 1</span>
+  <span id="count">1 line, 0 characters</span>
+  <span id="detected"></span>
+  <span id="msg" role="status"></span>
+</footer>
+
+<script>
+(function(){
+"use strict";
+var $=function(s){return document.querySelector(s)};
+var ed=$("#ed"),hl=$("#hl"),gut=$("#gut"),sel=$("#lang"),root=document.documentElement;
+var S=String.raw;
+
+/* ---------- language definitions ---------- */
+var CKW="if else for while do switch case break continue return default goto struct union enum typedef static const extern volatile void int char short long float double unsigned signed auto sizeof class public private protected new delete this try catch throw namespace using template typename virtual override final true false null nullptr NULL bool include define";
+var L={
+  auto:{name:"Auto-detect"},
+  js:{name:"JavaScript / TypeScript",ext:"js",line:["//"],block:1,bt:1,kw:"var let const function return if else for while do switch case break continue new delete typeof instanceof in of this class extends super import export from default async await yield try catch finally throw null undefined true false void static get set interface type enum implements public private protected readonly as"},
+  py:{name:"Python",ext:"py",line:["#"],tri:1,kw:"def class return if elif else for while in not and or is import from as with try except finally raise pass break continue lambda yield global nonlocal None True False async await del assert self"},
+  c:{name:"C / C++",ext:"cpp",line:["//"],block:1,kw:CKW},
+  java:{name:"Java / Kotlin",ext:"java",line:["//"],block:1,kw:"abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for if implements import instanceof int interface long native new package private protected public return short static super switch synchronized this throw throws try void volatile while null true false fun val var when object"},
+  cs:{name:"C#",ext:"cs",line:["//"],block:1,kw:"abstract as base bool break byte case catch char class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach if in int interface internal is lock long namespace new null object operator out override params private protected public readonly ref return sealed short sizeof static string struct switch this throw true try typeof uint ulong unsafe using var virtual void while async await"},
+  go:{name:"Go",ext:"go",line:["//"],block:1,bt:1,kw:"break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var nil true false"},
+  rs:{name:"Rust",ext:"rs",line:["//"],block:1,kw:"as break const continue crate else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while async await dyn"},
+  php:{name:"PHP",ext:"php",line:["//","#"],block:1,ci:1,kw:"function return if else elseif for foreach while do switch case break continue class extends implements new public private protected static echo print require include require_once include_once try catch finally throw namespace use null true false array isset empty const abstract interface"},
+  sh:{name:"Shell / Bash",ext:"sh",line:["#"],kw:"if then else elif fi for while do done case esac in function return exit echo cd ls export local read source sudo apt grep sed awk cat chmod mkdir rm cp mv"},
+  sql:{name:"SQL",ext:"sql",line:["--"],block:1,ci:1,kw:"select from where insert into values update set delete create table alter drop index join inner left right outer on group by order having limit as and or not null is in like between distinct union primary key foreign references default unique count sum avg min max case when then else end"},
+  json:{name:"JSON",ext:"json",kw:"true false null"},
+  css:{name:"CSS",ext:"css"},
+  html:{name:"HTML / XML",ext:"html"},
+  plain:{name:"Plain text",ext:"txt"},
+  generic:{name:"Other",ext:"txt",line:["//","#"],block:1,bt:1,kw:CKW+" function def let var const fn func end then elif elsif begin module import from as in of is and or not"}
+};
+Object.keys(L).forEach(function(k){
+  var o=document.createElement("option");o.value=k;o.textContent=L[k].name;
+  if(k!=="generic")sel.appendChild(o);
+});
+var KW={};
+
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function span(c,t){return c?'<span class="'+c+'">'+esc(t)+"</span>":esc(t)}
+
+function build(c){
+  var cm=[];
+  if(c.block)cm.push(S`\/\*[\s\S]*?(?:\*\/|$)`);
+  (c.line||[]).forEach(function(x){cm.push(x.replace(/[\/#\-]/g,"\\$&")+S`[^\n]*`)});
+  var str=S`"(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?`;
+  if(c.bt)str+="|`(?:\\\\.|[^`\\\\])*`?";
+  if(c.tri)str='"""[\\s\\S]*?(?:"""|$)|\'\'\'[\\s\\S]*?(?:\'\'\'|$)|'+str;
+  var num=S`\b(?:0[xX][0-9a-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b`;
+  var word=S`[A-Za-z_$][\w$]*`;
+  return new RegExp("("+(cm.length?cm.join("|"):"(?!)")+")|("+str+")|("+num+")|("+word+")","g");
+}
+
+var CSS_RE=/(\/\*[\s\S]*?(?:\*\/|$))|("(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?)|(#[0-9a-fA-F]{3,8}\b|-?\d*\.?\d+(?:px|em|rem|%|vh|vw|s|ms|deg|fr)?)|(@[\w-]+)|([\w-]+)(?=\s*:)/g;
+var HTML_RE=/(<!--[\s\S]*?(?:-->|$))|(<\/?[A-Za-z][\w:-]*|\/?>)|("[^"]*"?|'[^']*'?)|([\w:-]+)(?==)/g;
+
+function runMap(code,re,cls){
+  re.lastIndex=0;var out="",last=0,m;
+  while((m=re.exec(code))){
+    if(m[0]===""){re.lastIndex++;continue}
+    out+=esc(code.slice(last,m.index));
+    var c="";for(var i=1;i<m.length;i++)if(m[i]!==undefined){c=cls[i-1];break}
+    out+=span(c,m[0]);last=m.index+m[0].length;
+  }
+  return out+esc(code.slice(last));
+}
+
+function highlight(code,key){
+  if(key==="plain"||code.length>300000)return esc(code);
+  if(key==="css")return runMap(code,CSS_RE,["c","s","n","k","f"]);
+  if(key==="html")return runMap(code,HTML_RE,["c","k","s","f"]);
+  var cfg=L[key]||L.generic;
+  if(!cfg.re){cfg.re=build(cfg);cfg.set={};(cfg.kw||"").split(" ").forEach(function(w){if(w)cfg.set[cfg.ci?w.toLowerCase():w]=1})}
+  var re=cfg.re;re.lastIndex=0;var out="",last=0,m;
+  while((m=re.exec(code))){
+    if(m[0]===""){re.lastIndex++;continue}
+    out+=esc(code.slice(last,m.index));
+    var c="";
+    if(m[1]!==undefined)c="c";
+    else if(m[2]!==undefined)c="s";
+    else if(m[3]!==undefined)c="n";
+    else{
+      var w=cfg.ci?m[4].toLowerCase():m[4];
+      if(cfg.set[w])c="k";
+      else if(code.charAt(m.index+m[0].length)==="(")c="f";
+      else if(/^[A-Z][a-z]/.test(m[4]))c="t";
+    }
+    out+=span(c,m[0]);last=m.index+m[0].length;
+  }
+  return out+esc(code.slice(last));
+}
+
+function detect(t){
+  var s=t.trim();
+  if(!s)return "plain";
+  if(/^[\[{][\s\S]*[\]}]$/.test(s)){try{JSON.parse(s);return "json"}catch(e){}}
+  if(/<\?php/.test(s))return "php";
+  if(/^\s*(<!doctype html|<html|<\?xml|<[a-z][\w-]*[\s>])/i.test(s)&&/<\/?[a-z][^>]*>/i.test(s))return "html";
+  if(/^#!.*\b(ba|z|)sh\b/m.test(s)||/^\s*(sudo |apt |echo |chmod |mkdir |export |cd |\$ )/m.test(s))return "sh";
+  if(/\b(select\b[\s\S]+\bfrom|insert\s+into|create\s+table|delete\s+from|update\s+\w+\s+set)\b/i.test(s))return "sql";
+  if(/^\s*(def \w+\(|import \w+|from [\w.]+ import|class \w+.*:\s*$|print\(|elif )/m.test(s)&&!/;\s*$/m.test(s))return "py";
+  if(/using System|Console\.Write|namespace \w+\s*\{?\s*$/m.test(s))return "cs";
+  if(/\bpackage \w+|^\s*func (\(\w+ \*?\w+\) )?\w+\(|:=/m.test(s)&&/\bfunc\b|\bpackage\b/.test(s))return "go";
+  if(/\bfn \w+\(|let mut |println!|impl\s+\w+/.test(s))return "rs";
+  if(/#include\s*[<"]|\bstd::|\bint main\s*\(/.test(s))return "c";
+  if(/\bpublic\s+(static\s+)?(class|void|int)\b|System\.out|\bfun \w+\(/.test(s))return "java";
+  if(/(^|\})\s*[.#@]?[\w\-\s,>:.#\[\]="]+\{[^{}]*:[^{}]*;?\s*\}/.test(s)&&!/\b(function|const|let|var)\b/.test(s))return "css";
+  if(/\b(const|let|var|function)\b|=>|console\.|require\(|import .* from /.test(s))return "js";
+  return "generic";
+}
+
+/* ---------- rendering ---------- */
+var raf=0;
+function render(){
+  var v=ed.value;
+  var key=sel.value==="auto"?detect(v):sel.value;
+  hl.innerHTML=highlight(v,key)+"\n";
+  var n=v.split("\n").length,g="";
+  for(var i=1;i<=n;i++)g+=i+"\n";
+  gut.textContent=g.slice(0,-1);
+  $("#count").textContent=n+(n===1?" line, ":" lines, ")+v.length.toLocaleString()+" characters";
+  $("#detected").textContent=sel.value==="auto"&&v.trim()?"Detected: "+L[key].name:"";
+  render.key=key;
+  sync();pos();
+  try{localStorage.setItem("codepad.code",v)}catch(e){}
+}
+function sync(){hl.scrollTop=ed.scrollTop;hl.scrollLeft=ed.scrollLeft;gut.scrollTop=ed.scrollTop}
+function pos(){
+  var v=ed.value.slice(0,ed.selectionStart).split("\n");
+  $("#pos").textContent="Ln "+v.length+", Col "+(v[v.length-1].length+1);
+}
+function queue(){cancelAnimationFrame(raf);raf=requestAnimationFrame(render)}
+
+var tm;
+function say(t){var m=$("#msg");m.textContent=t;clearTimeout(tm);tm=setTimeout(function(){m.textContent=""},2200)}
+
+/* ---------- editing helpers ---------- */
+function insert(t){ed.focus();if(!document.execCommand("insertText",false,t))ed.setRangeText(t,ed.selectionStart,ed.selectionEnd,"end")}
+
+ed.addEventListener("input",queue);
+ed.addEventListener("scroll",sync);
+["keyup","click","select"].forEach(function(e){ed.addEventListener(e,pos)});
+
+ed.addEventListener("keydown",function(e){
+  var v=ed.value,a=ed.selectionStart,b=ed.selectionEnd;
+  if(e.key==="Tab"&&!e.ctrlKey&&!e.altKey&&!e.metaKey){
+    e.preventDefault();
+    var multi=v.slice(a,b).indexOf("\n")>-1;
+    if(!multi&&!e.shiftKey){insert("    ");return}
+    var s=v.lastIndexOf("\n",a-1)+1,en=b;
+    var block=v.slice(s,en),out=e.shiftKey?block.replace(/^( {1,4}|\t)/gm,""):block.replace(/^/gm,"    ");
+    ed.setSelectionRange(s,en);insert(out);ed.setSelectionRange(s,s+out.length);
+    return;
+  }
+  if(e.key==="Enter"&&!e.ctrlKey&&!e.metaKey&&!e.shiftKey&&!e.altKey){
+    var ls=v.lastIndexOf("\n",a-1)+1,ind=/^[ \t]*/.exec(v.slice(ls,a))[0];
+    var prev=v.slice(ls,a).trimRight().slice(-1);
+    if("{[(:".indexOf(prev)>-1&&prev)ind+="    ";
+    e.preventDefault();insert("\n"+ind);
+  }
+});
+
+/* ---------- actions ---------- */
+function fallbackCopy(t){
+  var x=document.createElement("textarea");x.value=t;x.style.position="fixed";x.style.opacity="0";
+  document.body.appendChild(x);x.select();var ok=false;try{ok=document.execCommand("copy")}catch(e){}
+  document.body.removeChild(x);return ok;
+}
+$("#copy").onclick=function(){
+  var t=ed.selectionStart!==ed.selectionEnd?ed.value.slice(ed.selectionStart,ed.selectionEnd):ed.value;
+  if(!t){say("Nothing to copy");return}
+  var done=function(){say(ed.selectionStart!==ed.selectionEnd?"Selection copied":"Copied all code")};
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(done,function(){fallbackCopy(t)&&done()});
+  else if(fallbackCopy(t))done();else say("Copy failed. Select the text and press Ctrl+C");
+};
+$("#paste").onclick=function(){
+  var put=function(t){ed.focus();ed.select();insert(t);queue();say("Pasted")};
+  if(navigator.clipboard&&navigator.clipboard.readText)navigator.clipboard.readText().then(put,function(){ed.focus();ed.select();say("Press Ctrl+V to paste")});
+  else{ed.focus();ed.select();say("Press Ctrl+V to paste")}
+};
+$("#clear").onclick=function(){ed.focus();ed.select();insert("");ed.value="";queue();say("Cleared")};
+$("#open").onclick=function(){$("#file").click()};
+$("#file").onchange=function(){
+  var f=this.files[0];if(!f)return;
+  var r=new FileReader();
+  r.onload=function(){
+    ed.value=r.result;
+    var ext=(f.name.split(".").pop()||"").toLowerCase(),map={js:"js",mjs:"js",ts:"js",jsx:"js",tsx:"js",py:"py",c:"c",h:"c",cpp:"c",cc:"c",hpp:"c",java:"java",kt:"java",cs:"cs",go:"go",rs:"rs",php:"php",sh:"sh",bash:"sh",sql:"sql",css:"css",html:"html",htm:"html",xml:"html",json:"json",txt:"plain"};
+    sel.value=map[ext]||"auto";try{localStorage.setItem("codepad.lang",sel.value)}catch(e){}
+    render();say("Opened "+f.name);
+  };
+  r.readAsText(f);this.value="";
+};
+$("#save").onclick=function(){
+  var key=render.key||"plain",ext=(L[key]||L.generic).ext||"txt";
+  var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([ed.value],{type:"text/plain"}));
+  a.download="code."+ext;document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(a.href)},1000);say("Saved as code."+ext);
+};
+sel.onchange=function(){try{localStorage.setItem("codepad.lang",sel.value)}catch(e){}render()};
+
+function size(d){
+  var cur=parseInt(getComputedStyle(root).getPropertyValue("--fs"))||14,n=Math.max(10,Math.min(28,cur+d));
+  root.style.setProperty("--fs",n+"px");try{localStorage.setItem("codepad.fs",n)}catch(e){}sync();
+}
+$("#smaller").onclick=function(){size(-1)};
+$("#bigger").onclick=function(){size(1)};
+
+function theme(t){root.setAttribute("data-theme",t);$("#theme").textContent=t==="dark"?"Light":"Dark";try{localStorage.setItem("codepad.theme",t)}catch(e){}}
+$("#theme").onclick=function(){theme(root.getAttribute("data-theme")==="dark"?"light":"dark")};
+
+/* ---------- restore saved state ---------- */
+var st=function(k){try{return localStorage.getItem("codepad."+k)}catch(e){return null}};
+theme(st("theme")||(window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"));
+if(st("fs"))root.style.setProperty("--fs",st("fs")+"px");
+if(st("lang")&&L[st("lang")])sel.value=st("lang");
+ed.value=st("code")||"";
+render();ed.focus();
+})();
+</script>
+</body>
+</html>
